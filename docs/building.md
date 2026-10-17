@@ -14,6 +14,12 @@ It is recommended to use one of the following compilers:
 
 ### Dependencies
 
+On Linux and FreeBSD, Sunshine and the prebuilt FFmpeg libraries use the system's shared libva core and backends.
+These components share a private display-context ABI and must come from the same libva build. Sunshine also uses
+the system libva headers so its compatibility shims match the installed API. Bundled libva archives and headers
+are excluded from the build. The system provides libdrm, the GPU's VA-API driver, and libva's driver configuration.
+AppImages use the same system libraries at runtime; they do not bundle libva.
+
 #### FreeBSD
 > [!CAUTION]
 > Sunshine support for FreeBSD is experimental and may be incomplete or not work as expected

@@ -13,44 +13,7 @@ extern "C" {
 #include <libavutil/pixdesc.h>
 #include <va/va.h>
 #include <va/va_drm.h>
-#if !VA_CHECK_VERSION(1, 9, 0)
-  /**
-   * @brief Stub vaSyncBuffer when building against libva before 2.9.0.
-   *
-   * @param dpy VA display.
-   * @param buf_id VA buffer ID.
-   * @param timeout_ns Sync timeout in nanoseconds.
-   * @return VA status code.
-   */
-  VAStatus
-    vaSyncBuffer(
-      VADisplay dpy,
-      VABufferID buf_id,
-      uint64_t timeout_ns
-    ) {
-    return VA_STATUS_ERROR_UNIMPLEMENTED;
-  }
-#endif
-#if !VA_CHECK_VERSION(1, 21, 0)
-  /**
-   * @brief Stub vaMapBuffer2 when building against libva before 2.21.0.
-   *
-   * @param dpy VA display.
-   * @param buf_id VA buffer ID.
-   * @param pbuf Output mapped buffer pointer.
-   * @param flags Mapping flags.
-   * @return VA status code.
-   */
-  VAStatus
-    vaMapBuffer2(
-      VADisplay dpy,
-      VABufferID buf_id,
-      void **pbuf,
-      uint32_t flags
-    ) {
-    return vaMapBuffer(dpy, buf_id, pbuf);
-  }
-#endif
+#include <va/va_drmcommon.h>
 }
 
 // local includes
