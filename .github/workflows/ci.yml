@@ -97,8 +97,26 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           ref: ${{ env.SOURCE_COMMIT }}
-          submodules: recursive
           fetch-depth: 0
+
+      - name: Checkout AppImage build dependencies
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          # FFmpeg and codec libraries are prebuilt release dependencies. Their
+          # source trees (and unused Flatpak tooling) are not build inputs here.
+          git submodule update --init --depth 1 --jobs 4 \
+            third-party/build-deps third-party/Simple-Web-Server \
+            third-party/TPCircularBuffer third-party/glad \
+            third-party/libdisplaydevice third-party/libvirtualhid \
+            third-party/lizardbyte-common third-party/moonlight-common-c \
+            third-party/plasma-wayland-protocols third-party/tray \
+            third-party/wayland-protocols third-party/wlr-protocols
+          git -C third-party/build-deps submodule update --init --depth 1 \
+            third-party/FFmpeg/Vulkan-Headers
+          for module in libdisplaydevice libvirtualhid lizardbyte-common moonlight-common-c tray; do
+            git -C "third-party/$module" submodule update --init --recursive --depth 1 --jobs 4
+          done
 
       - name: Verify checkout matches source commit
         run: |
