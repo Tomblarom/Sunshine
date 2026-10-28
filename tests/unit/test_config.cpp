@@ -14,6 +14,7 @@
 // local includes
 #include <src/config.h>
 #include <src/file_handler.h>
+#include <src/utility.h>
 
 using namespace std::literals;
 
@@ -124,3 +125,26 @@ TEST_F(ConfigPersistenceTest, SelectsAllDriversOnlyForLicensedUsersWithoutAPrefe
   EXPECT_FALSE(config::select_all_gamepad_drivers_if_licensed(true));
   EXPECT_EQ(file_handler::read_file(config_file().string().c_str()), "gamepad_driver = all\n");
 }
+
+TEST(ConfigDefaultsTest, PrefersDmabufForPipeWireCapture) {
+  EXPECT_TRUE(config::video.pipewire_use_dmabuf);
+}
+
+TEST_F(ConfigPersistenceTest, ParsesPipeWireDmabufOption) {
+  const auto original_video = config::video;
+  const auto original_apps = config::stream.file_apps;
+  const auto restore_config = util::fail_guard([original_video, original_apps]() {
+    config::video = original_video;
+    config::stream.file_apps = original_apps;
+  });
+  const auto apps_file = config_file().parent_path() / "sunshine_test_config_apps.json";
+  ASSERT_EQ(file_handler::write_file(apps_file.string().c_str(), "{}"), 0);
+  config::stream.file_apps = apps_file.string();
+
+  config::apply_config_for_test("pipewire_use_dmabuf = disabled\n");
+  EXPECT_FALSE(config::video.pipewire_use_dmabuf);
+
+  config::apply_config_for_test("pipewire_use_dmabuf = enabled\n");
+  EXPECT_TRUE(config::video.pipewire_use_dmabuf);
+}
+

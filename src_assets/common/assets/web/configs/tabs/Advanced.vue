@@ -86,6 +86,15 @@ const config = ref(props.config)
       <div class="form-text">{{ $t('config.capture_desc') }}</div>
     </div>
 
+    <!-- PipeWire DMA-BUF -->
+    <Checkbox v-if="platform === 'linux'"
+              class="mb-3"
+              id="pipewire_use_dmabuf"
+              locale-prefix="config"
+              v-model="config.pipewire_use_dmabuf"
+              default="true"
+    ></Checkbox>
+
     <!-- Encoder -->
     <div class="mb-3">
       <label for="encoder" class="form-label">{{ $t('config.encoder') }}</label>
