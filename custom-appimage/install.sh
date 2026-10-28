@@ -22,6 +22,7 @@ dropin=$dropdir/99-sunshine-custom.conf
 # Restrict service paths to characters with unambiguous systemd quoting semantics.
 [[ $root != *[$'\n\r%\\\"']* && $config != *[$'\n\r%\\\"']* ]] || exit 2
 mkdir -p "$root/releases" "$root/backups"
+[[ ! -e $root/current.AppImage || -L $root/current.AppImage ]] || { echo 'current.AppImage exists and is not an installer symlink; preserve it before proceeding.' >&2; exit 1; }
 exec 9>"$root/install.lock"
 flock -n 9 || { echo 'Another install or rollback is running.' >&2; exit 1; }
 printf '%s  %s\n' "$digest" "$image" | sha256sum -c -
@@ -31,7 +32,8 @@ if [[ ! -e /dev/fuse ]]; then
   echo 'FUSE is unavailable. Enable /dev/fuse and install libfuse2t64 before installing.' >&2
   exit 1
 fi
-ldconfig -p | awk '/libfuse.so.2 / {found=1} END {exit !found}' || { echo 'Install libfuse2t64 first.' >&2; exit 1; }
+ldconfig_bin=$(command -v ldconfig || printf /sbin/ldconfig)
+"$ldconfig_bin" -p | awk '/libfuse.so.2 / {found=1} END {exit !found}' || { echo 'Install libfuse2t64 first.' >&2; exit 1; }
 release=$root/releases/$digest.AppImage
 stage=$(mktemp "$root/releases/.stage.XXXXXX")
 checkdir=$(mktemp -d "$root/.version.XXXXXX")
