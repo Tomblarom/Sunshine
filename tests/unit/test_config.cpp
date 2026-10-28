@@ -147,4 +147,3 @@ TEST_F(ConfigPersistenceTest, ParsesPipeWireDmabufOption) {
   config::apply_config_for_test("pipewire_use_dmabuf = enabled\n");
   EXPECT_TRUE(config::video.pipewire_use_dmabuf);
 }
-

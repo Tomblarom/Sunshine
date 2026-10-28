@@ -650,9 +650,9 @@ function run_step_deps() {
         wget "${doxygen_download_args[@]}"  # NOSONAR(shell:S6506)
         tar -xzf "${DOXYGEN}.tar.gz"
         cd "${DOXYGEN}-${doxygen_min}"
-        cmake -DCMAKE_BUILD_TYPE=Release -G="Ninja" -B="build" -S="."
-        ninja -C "build" -j"${num_processors}"
-        ${sudo_cmd} ninja -C "build" install
+        cmake -DCMAKE_BUILD_TYPE=Release -G="Ninja" -B="cmake-build-appimage" -S="."
+        ninja -C "cmake-build-appimage" -j"${num_processors}"
+        ${sudo_cmd} ninja -C "cmake-build-appimage" install
       popd
     else
       echo "${DOXYGEN} version not in range, skipping docs"
@@ -705,7 +705,7 @@ function run_step_cmake() {
 
   # prepare CMAKE args
   cmake_args=(
-    "-B=build"
+    "-B=cmake-build-appimage"
     "-G=Ninja"
     "-S=."
     "-DBUILD_WERROR=ON"
@@ -752,7 +752,7 @@ function run_step_cmake() {
   fi
 
   # Cmake stuff here
-  mkdir -p "build"
+  mkdir -p "cmake-build-appimage"
   echo "cmake args:"
   echo "${cmake_args[@]}"
   cmake "${cmake_args[@]}"
@@ -763,11 +763,11 @@ function run_step_validation() {
   echo "Running step: Validation"
 
   # Run appstream validation, etc.
-  appstreamcli validate "build/dev.lizardbyte.app.Sunshine.metainfo.xml"
-  appstream-util validate "build/dev.lizardbyte.app.Sunshine.metainfo.xml"
-  desktop-file-validate "build/dev.lizardbyte.app.Sunshine.desktop"
+  appstreamcli validate "cmake-build-appimage/dev.lizardbyte.app.Sunshine.metainfo.xml"
+  appstream-util validate "cmake-build-appimage/dev.lizardbyte.app.Sunshine.metainfo.xml"
+  desktop-file-validate "cmake-build-appimage/dev.lizardbyte.app.Sunshine.desktop"
   if [[ "$appimage_build" == 0 ]]; then
-    desktop-file-validate "build/dev.lizardbyte.app.Sunshine.terminal.desktop"
+    desktop-file-validate "cmake-build-appimage/dev.lizardbyte.app.Sunshine.terminal.desktop"
   fi
   return 0
 }
@@ -779,7 +779,7 @@ function run_step_build() {
   setup_nvm_environment
 
   # Build the project
-  ninja -C "build"
+  ninja -C "cmake-build-appimage" -j"${num_processors}"
   return 0
 }
 
@@ -789,9 +789,9 @@ function run_step_package() {
   # Create the package
   if [[ "$skip_package" == 0 ]]; then
     if [[ "$distro" == "$DISTRO_DEBIAN" ]] || [[ "$distro" == "$DISTRO_UBUNTU" ]]; then
-      cpack -G DEB --config ./build/CPackConfig.cmake
+      cpack -G DEB --config ./cmake-build-appimage/CPackConfig.cmake
     elif [[ "$distro" == "$DISTRO_FEDORA" ]]; then
-      cpack -G RPM --config ./build/CPackConfig.cmake
+      cpack -G RPM --config ./cmake-build-appimage/CPackConfig.cmake
     fi
   fi
   return 0
@@ -951,7 +951,7 @@ fi
 
 # get directory of this script
 script_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
-build_dir=$(readlink -f "$script_dir/../build")
+build_dir=$(readlink -f "$script_dir/../cmake-build-appimage")
 echo "Script Directory: $script_dir"
 echo "Build Directory: $build_dir"
 mkdir -p "$build_dir"

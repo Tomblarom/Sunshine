@@ -1,354 +1,341 @@
 ---
-name: CI
+# Fork-only custom AppImage build (x86_64, stable-based ramfallback test build).
+#
+# INSTALL: commit this file AS `.github/workflows/ci.yml` ONLY on the fork
+# branch `build/2026.914.233613-ramfallback`. Do NOT merge it into any
+# upstream-bound branch or PR; the fork default branch stays untouched.
+#
+# DISPATCH (from a checkout of the fork):
+#   gh workflow run ci.yml --ref build/2026.914.233613-ramfallback \
+#     -f source_commit=<full 40-hex SHA>
+# Omit `source_commit` to build the branch HEAD instead. The input is
+# validated as 40-hex and the checkout is verified to match it exactly.
+#
+# WHAT IT DOES: checks out the given source commit (stable tag plus the
+# backported ramfallback/libva changes), builds with the checked-out tree's
+# own `scripts/linux_build.sh --appimage-build --skip-cuda`, packages an
+# x86_64 AppImage on ubuntu-22.04 with the official linuxdeploy steps, runs
+# the unit tests, and uploads the AppImage with SHA256, build-info, and
+# SLSA-style build provenance attestation.
+#
+# WHAT IT DOES NOT DO: no release creation, no push, no publish of any kind.
+# Artifacts are workflow run artifacts only.
+#
+# LIBVA POLICY (matches current master, NOT the original stable CI): the
+# build links the distro system libva (headers + shared core/backends from
+# the same libva-dev) and the AppImage bundles NO libva — core, backends,
+# and driver configuration all come from the host at runtime. The workflow
+# fails the build if sunshine is not dynamically linked against libva.so.2
+# and libva-drm.so.2, or if any libva shared library or static archive is
+# found inside the AppDir.
+name: Custom AppImage (stable ramfallback)
 permissions: {}
 
 on:
-  pull_request:
-  push:
-    branches:
-      - master
   workflow_dispatch:
+    inputs:
+      source_commit:
+        description: 'Full 40-hex source commit SHA to build (default: branch HEAD)'
+        required: false
+        default: ''
+        type: string
+      base_tag:
+        description: 'Stable base tag used in the version string'
+        required: false
+        default: 'v2026.914.233613'
+        type: string
 
-concurrency:
-  group: "${{ github.workflow }}-${{ github.ref }}"
-  cancel-in-progress: true
+env:
+  PYTHON_VERSION: '3.14'
 
 jobs:
-  github-env:
-    name: GitHub Env Debug
+  build_custom_appimage:
+    name: Custom-AppImage-x86_64
+    env:
+      APP_ID: dev.lizardbyte.app.Sunshine
+      M_ARCH: x86_64
     permissions:
       contents: read
-    uses: LizardByte/.github/.github/workflows/__call-github-env.yml@master
-
-  release-setup:
-    name: Release Setup
-    outputs:
-      publish_release: ${{ steps.release-setup.outputs.publish_release }}
-      release_body: ${{ steps.release-setup.outputs.release_body }}
-      release_commit: ${{ steps.release-setup.outputs.release_commit }}
-      release_generate_release_notes: ${{ steps.release-setup.outputs.release_generate_release_notes }}
-      release_tag: ${{ steps.release-setup.outputs.release_tag }}
-      release_version: ${{ steps.release-setup.outputs.release_version }}
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
+      id-token: write
+      attestations: write
+    runs-on: ubuntu-22.04
     steps:
-      - name: Checkout
+      - name: Resolve and validate source commit
+        id: source
+        env:
+          REQUESTED_COMMIT: ${{ inputs.source_commit }}
+          HEAD_COMMIT: ${{ github.sha }}
+          BASE_TAG: ${{ inputs.base_tag }}
+        run: |
+          set -euo pipefail
+          requested="${REQUESTED_COMMIT:-$HEAD_COMMIT}"
+          if ! [[ "$requested" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::source_commit must be a full 40-hex SHA, got: ${requested}"
+            exit 1
+          fi
+          if ! [[ "$BASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::base_tag must look like vYYYY.MDD.PATCH, got: ${BASE_TAG}"
+            exit 1
+          fi
+          short="${requested:0:12}"
+          version="${BASE_TAG#v}-ramfallback-${short}"
+          {
+            echo "SOURCE_COMMIT=${requested}"
+            echo "SHORT_SHA=${short}"
+            echo "VERSION=${version}"
+          } >> "$GITHUB_ENV"
+          echo "commit=${requested}" >> "$GITHUB_OUTPUT"
+          echo "Building ${version} from ${requested}"
+
+      - name: More space
+        uses: LizardByte/actions/actions/more_space@28374bf43cc8b6ee88b9b8a3419b2ac7a6573906  # v2026.928.123224
+        with:
+          analyze-space-savings: true
+          clean-all: true
+
+      - name: Checkout source commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-
-      - name: Release Setup
-        id: release-setup
-        uses: LizardByte/actions/actions/release_setup@39c468549cfb87ccb917e5e5342e18abc926dc48  # v2026.909.30231
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ env.SOURCE_COMMIT }}
+          submodules: recursive
+          fetch-depth: 0
 
-  build-docker:
-    name: Docker
-    needs: release-setup
-    permissions:
-      contents: read
-      packages: write
-    uses: LizardByte/.github/.github/workflows/__call-docker.yml@master
-    with:
-      docker_hub_username: ${{ vars.DOCKER_HUB_USERNAME }}
-      gh_bot_name: ${{ vars.GH_BOT_NAME }}
-      maximize_build_space: true
-      publish_release: ${{ needs.release-setup.outputs.publish_release }}
-      release_commit: ${{ needs.release-setup.outputs.release_commit }}
-      release_tag: ${{ needs.release-setup.outputs.release_tag }}
-      release_version: ${{ needs.release-setup.outputs.release_version }}
-    secrets:
-      DOCKER_HUB_PASSWORD: ${{ secrets.DOCKER_HUB_PASSWORD }}
-      DOCKER_HUB_ACCESS_TOKEN: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
-      GH_BOT_TOKEN: ${{ secrets.GH_BOT_TOKEN }}
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify checkout matches source commit
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${SOURCE_COMMIT}"
+          git merge-base --is-ancestor "${{ inputs.base_tag }}" HEAD
+          git merge-base --is-ancestor v2026.914.233613 HEAD
+          git submodule status
+          git log --oneline -3
 
-  build-freebsd:
-    name: FreeBSD
-    needs: release-setup
-    permissions:
-      contents: read
-    uses: ./.github/workflows/ci-freebsd.yml
-    with:
-      release_commit: ${{ needs.release-setup.outputs.release_commit }}
-      release_version: ${{ needs.release-setup.outputs.release_version }}
+      - name: Setup Dependencies Linux
+        timeout-minutes: 10
+        run: |
+          # create the artifacts directory
+          mkdir -p artifacts
 
-  build-homebrew:
-    name: Homebrew
-    needs: release-setup
-    permissions:
-      contents: read
-    uses: ./.github/workflows/ci-homebrew.yml
-    with:
-      git_username: ${{ vars.GH_BOT_NAME }}
-      publish_release: ${{ needs.release-setup.outputs.publish_release }}
-      release_commit: ${{ needs.release-setup.outputs.release_commit }}
-      release_tag: ${{ needs.release-setup.outputs.release_tag }}
-      release_version: ${{ needs.release-setup.outputs.release_version }}
-    secrets:
-      GH_TOKEN: ${{ secrets.GH_BOT_TOKEN }}
-      GIT_EMAIL: ${{ secrets.GH_BOT_EMAIL }}
+          # allow libfuse2 for appimage on 22.04+
+          sudo add-apt-repository universe
 
-  build-macos:
-    name: macOS
-    needs: release-setup
-    permissions:
-      contents: read
-    uses: ./.github/workflows/ci-macos.yml
-    with:
-      publish_release: ${{ needs.release-setup.outputs.publish_release }}
-      release_commit: ${{ needs.release-setup.outputs.release_commit }}
-      release_version: ${{ needs.release-setup.outputs.release_version }}
-    secrets:
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      APPLE_NOTARYTOOL_PASSWORD: ${{ secrets.APPLE_NOTARYTOOL_PASSWORD }}
-      APPLE_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
-      APPLE_DEVELOPER_ID_APPLICATION_CERTIFICATE_BASE64: >-
-        ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERTIFICATE_BASE64 }}
-      APPLE_DEVELOPER_ID_APPLICATION_CERTIFICATE_P12_PASSWORD: >-
-        ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERTIFICATE_P12_PASSWORD }}
+          sudo apt-get install -y \
+            libdrm-dev \
+            libfuse2 \
+            libgl-dev \
+            libwayland-dev \
+            libx11-xcb-dev \
+            libxcb-dri3-dev \
+            libxfixes-dev \
+            libxtst-dev
 
-  build-linux:
-    name: Linux
-    needs: release-setup
-    permissions:
-      contents: read
-    uses: ./.github/workflows/ci-linux.yml
-    with:
-      release_commit: ${{ needs.release-setup.outputs.release_commit }}
-      release_version: ${{ needs.release-setup.outputs.release_version }}
+      - name: Install system libva (distro)
+        # The checked-out stable linux_build.sh skips libva-dev for AppImage
+        # builds; install the distro package explicitly so the build links the
+        # host-matched system libva (headers + shared core/backends) instead
+        # of building/bundling a private libva.
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y libva-dev
+          echo "libva pkg-config versions:"
+          pkg-config --modversion libva libva-drm
+          echo "installed libva packages:"
+          dpkg-query -W 'libva*' | sort
 
-  build-archlinux:
-    name: Archlinux
-    needs: release-setup
-    permissions:
-      contents: read
-    uses: ./.github/workflows/ci-archlinux.yml
-    with:
-      release_commit: ${{ needs.release-setup.outputs.release_commit }}
-      release_version: ${{ needs.release-setup.outputs.release_version }}
+      - name: Build Linux
+        env:
+          BRANCH: ${{ github.ref_name }}
+          BUILD_VERSION: ${{ env.VERSION }}
+          COMMIT: ${{ env.SOURCE_COMMIT }}
+        run: |
+          chmod +x ./scripts/linux_build.sh
+          echo "::add-matcher::.github/matchers/gcc.json"
+          ./scripts/linux_build.sh \
+            --publisher-name="${GITHUB_REPOSITORY_OWNER}" \
+            --publisher-website="https://app.lizardbyte.dev" \
+            --publisher-issue-url="https://github.com/${GITHUB_REPOSITORY}/issues" \
+            --skip-cleanup \
+            --num-processors=2 \
+            --skip-cuda \
+            --skip-package \
+            --ubuntu-test-repo \
+            --appimage-build
+          echo "::remove-matcher owner=gcc::"
 
-  build-alpine:
-    name: Alpine
-    needs: release-setup
-    permissions:
-      contents: read
-    uses: ./.github/workflows/ci-alpine.yml
-    with:
-      release_commit: ${{ needs.release-setup.outputs.release_commit }}
-      release_version: ${{ needs.release-setup.outputs.release_version }}
+      - name: Package Linux - AppImage
+        working-directory: cmake-build-appimage
+        run: |
+          # install sunshine to the DESTDIR
+          DESTDIR=AppDir ninja install
+          test -f AppDir/usr/share/sunshine/udev/rules.d/60-sunshine.rules
+          grep -Fq 'IMPORT{parent}="HID_*"' \
+            AppDir/usr/share/sunshine/udev/rules.d/60-sunshine.rules
+          grep -Fq 'ENV{HID_PHYS}=="libvirtualhid/uhid/*"' \
+            AppDir/usr/share/sunshine/udev/rules.d/60-sunshine.rules
 
-  build-linux-copr:
-    name: Linux Copr
-    if: github.event_name != 'push'  # releases are handled directly in ci-release.yml
-    needs: release-setup
-    permissions:
-      contents: write  # needed to update releases
-    uses: ./.github/workflows/ci-copr.yml
-    secrets:
-      COPR_BETA_WEBHOOK_TOKEN: ${{ secrets.COPR_BETA_WEBHOOK_TOKEN }}
-      COPR_STABLE_WEBHOOK_TOKEN: ${{ secrets.COPR_STABLE_WEBHOOK_TOKEN }}
-      COPR_CLI_CONFIG: ${{ secrets.COPR_CLI_CONFIG }}
-      VIRUSTOTAL_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
+          # custom AppRun file
+          cp -f ../packaging/linux/AppImage/AppRun ./AppDir/
+          chmod +x ./AppDir/AppRun
 
-  build-linux-flatpak:
-    name: Linux Flatpak
-    needs: release-setup
-    permissions:
-      contents: read
-    uses: ./.github/workflows/ci-flatpak.yml
-    with:
-      release_commit: ${{ needs.release-setup.outputs.release_commit }}
-      release_version: ${{ needs.release-setup.outputs.release_version }}
+          # variables
+          DESKTOP_FILE="${DESKTOP_FILE:-${APP_ID}.desktop}"
+          ICON_FILE="${ICON_FILE:-sunshine.png}"
+          LINUXDEPLOY_GH="https://github.com/linuxdeploy/linuxdeploy"
 
-  build-windows:
-    name: Windows
-    needs: release-setup
-    permissions:
-      contents: read
-    uses: ./.github/workflows/ci-windows.yml
-    with:
-      azure_signing_account: ${{ vars.AZURE_SIGNING_ACCOUNT }}
-      azure_signing_cert_profile: ${{ vars.AZURE_SIGNING_CERT_PROFILE }}
-      azure_signing_endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
-      publish_release: ${{ needs.release-setup.outputs.publish_release }}
-      release_commit: ${{ needs.release-setup.outputs.release_commit }}
-      release_version: ${{ needs.release-setup.outputs.release_version }}
-    secrets:
-      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          # AppImage
+          # https://docs.appimage.org/packaging-guide/index.html
+          url="${LINUXDEPLOY_GH}/releases/download/continuous/linuxdeploy-${M_ARCH}.AppImage"
+          wget --max-redirect=1 -q "$url"  # NOSONAR(githubactions:S6506): GitHub release needs one redirect.
+          chmod +x "linuxdeploy-${M_ARCH}.AppImage"
 
-  test-powershell:
-    name: PowerShell
-    permissions:
-      contents: read
-    uses: ./.github/workflows/ci-powershell.yml
+          # https://github.com/linuxdeploy/linuxdeploy-plugin-qt
+          url="${LINUXDEPLOY_GH}-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-${M_ARCH}.AppImage"
+          wget --max-redirect=1 -q "$url"  # NOSONAR(githubactions:S6506): GitHub release needs one redirect.
+          chmod +x "linuxdeploy-plugin-qt-${M_ARCH}.AppImage"
+          export QMAKE=/usr/lib/qt6/bin/qmake
+          export EXTRA_QT_MODULES="svg;"
+          "$QMAKE" -query QT_INSTALL_PLUGINS
 
-  bundle-analysis:
-    name: Bundle Analysis
-    needs: release-setup
-    permissions:
-      contents: read
-    uses: ./.github/workflows/ci-bundle.yml
-    secrets:
-      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+          "./linuxdeploy-${M_ARCH}.AppImage" \
+            --appdir ./AppDir \
+            --plugin qt \
+            --executable ./sunshine \
+            --exclude-library 'libva.so*' \
+            --exclude-library 'libva-*.so*' \
+            --icon-file "../$ICON_FILE" \
+            --desktop-file "./$DESKTOP_FILE" \
+            --output appimage
 
-  coverage:
-    name: Coverage-${{ matrix.name }}
-    if: >-
-      always() &&
-      !cancelled() &&
-      startsWith(github.repository, 'LizardByte/')
-    needs:
-      - build-freebsd
-      - build-linux
-      - build-archlinux
-      - build-alpine
-      - build-linux-flatpak
-      - build-macos
-      - build-homebrew
-      - build-windows
-      - test-powershell
-    permissions:
-      contents: read
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: FreeBSD-amd64
-            coverage: true
-          - name: Linux-AppImage-aarch64
-            coverage: true
-          - name: Linux-AppImage-x86_64
-            coverage: true
-          - name: Archlinux
-            coverage: true
-          - name: Alpine-x86_64
-            coverage: true
-          - name: Alpine-aarch64
-            coverage: true
-          - name: macOS-arm64
-            coverage: true
-          - name: macOS-x86_64
-            coverage: true
-          - name: Homebrew-macos-15
-            coverage: true
-            coverage_file: coverage.lcov
-          - name: Homebrew-macos-26
-            coverage: true
-            coverage_file: coverage.lcov
-          - name: Homebrew-ubuntu-24.04
-            coverage: true
-          - name: Windows-AMD64
-            coverage: true
-          - name: Windows-ARM64
-            coverage: true
-          - name: PowerShell
-            coverage: true
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+          # Host-libva consistency: sunshine must link the host's libva core
+          # and DRM backend dynamically, and the AppDir must bundle no libva
+          # shared library or static archive at all.
+          readelf -d ./sunshine | grep -F 'Shared library: [libva.so.2]'
+          readelf -d ./sunshine | grep -F 'Shared library: [libva-drm.so.2]'
+          test -z "$(find ./AppDir \( -name 'libva.so*' -o -name 'libva-*.so*' \) -print -quit)"
+          test -z "$(find ./AppDir -name 'libva*.a' -print -quit)"
+          echo "--- sunshine NEEDED entries (informational) ---"
+          readelf -d ./sunshine | grep -E 'NEEDED|Shared library' || true
 
-      - name: Download coverage artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+          # print original name of AppImage file
+          echo "AppImage file: $(ls Sunshine*.AppImage)"
+
+          # move
+          mv Sunshine*.AppImage "../artifacts/Sunshine_${VERSION}_${M_ARCH}.AppImage"
+
+          # permissions
+          chmod +x "../artifacts/Sunshine_${VERSION}_${M_ARCH}.AppImage"
+
+      - name: Write build info and SHA256
+        run: |
+          set -euo pipefail
+          appimage="artifacts/Sunshine_${VERSION}_${M_ARCH}.AppImage"
+          test -f "$appimage"
+          {
+            echo "version=${VERSION}"
+            echo "base_tag=${{ inputs.base_tag }}"
+            echo "source_commit=${SOURCE_COMMIT}"
+            echo "base_commit=$(git rev-parse "${{ inputs.base_tag }}^{}")"
+            echo "short_sha=${SHORT_SHA}"
+            echo "branch=${{ github.ref_name }}"
+            echo "run_id=${{ github.run_id }}"
+            echo "run_url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "runner=ubuntu-22.04 (x86_64)"
+            echo "cuda=OFF (skipped)"
+            echo "libva_pkgconfig=$(pkg-config --modversion libva libva-drm | tr '\n' ' ')"
+            echo "built_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > artifacts/build-info.txt
+          cp custom-appimage/* artifacts/
+          (cd artifacts && sha256sum "$(basename "$appimage")" > SHA256SUMS)
+          cat artifacts/SHA256SUMS
+          cat artifacts/build-info.txt
+          git log --format=fuller "${{ inputs.base_tag }}..HEAD" > artifacts/source-commits.txt
+          git submodule status --recursive > artifacts/submodules.txt
+          sha256sum cmake-build-appimage/linuxdeploy*.AppImage > artifacts/packaging-tools.sha256
+          cmake --version > artifacts/cmake-version.txt
+          gcc-14 --version > artifacts/compiler-version.txt
+          readelf -d cmake-build-appimage/sunshine > artifacts/elf-dependencies.txt
+
+      - name: Setup python
+        id: python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
-          name: coverage-${{ matrix.name }}
-          path: _coverage
+          python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Upload test coverage
-        if: matrix.coverage != false
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
+      - name: Verify AppImage
+        run: |
+          # TODO: switch to upstream after
+          # https://github.com/TheAssassin/appimagelint/pull/50 and
+          # https://github.com/TheAssassin/appimagelint/pull/51
+          APPIMAGELINT_REPOSITORY="git+https://github.com/ReenigneArcher/appimagelint.git"
+          APPIMAGELINT_REF="lizardbyte"
+          python -m pip install -e "${APPIMAGELINT_REPOSITORY}@${APPIMAGELINT_REF}#egg=appimagelint"
+          appimagelint --help
+
+          appimagelint "./artifacts/Sunshine_${VERSION}_${M_ARCH}.AppImage"
+
+      - name: Install screenshot dependency
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y imagemagick
+
+          # clean apt cache
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+
+      - name: Setup virtual desktop
+        uses: LizardByte/actions/actions/virtual_desktop@28374bf43cc8b6ee88b9b8a3419b2ac7a6573906  # v2026.928.123224
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
         with:
-          disable_search: true
-          fail_ci_if_error: true
-          files: ./_coverage/${{ matrix.coverage_file || 'coverage.xml' }}
-          report_type: coverage
-          flags: ${{ matrix.name }}
-          token: ${{ secrets.CODECOV_TOKEN }}
-          verbose: true
+          enable-cache: true
+
+      - name: Sync Python tools
+        run: |
+          uv_sync_args=(
+            --locked
+            --python "${PYTHON_VERSION}"
+            --no-python-downloads
+            --no-install-project
+          )
+          # uv.lock pins external artifacts; reviewed local build hooks are required for gcovr.
+          uv sync "${uv_sync_args[@]}"  # NOSONAR(githubactions:S8541)
+
+      - name: Run tests
+        id: test
+        working-directory: cmake-build-appimage/tests
+        run: ./test_sunshine --gtest_color=yes --gtest_output=xml:test_results.xml
+
+      - name: Upload system tray screenshots
+        if: >-
+          always() &&
+          (steps.test.outcome == 'success' || steps.test.outcome == 'failure')
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: sunshine-screenshots-custom-AppImage-x86_64
+          path: cmake-build-appimage/tests/screenshots
+          if-no-files-found: error
 
       - name: Upload test results
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
+        if: >-
+          always() &&
+          (steps.test.outcome == 'success' || steps.test.outcome == 'failure')
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
-          disable_search: true
-          fail_ci_if_error: true
-          files: ./_coverage/tests/test_results.xml
-          report_type: test_results
-          flags: ${{ matrix.name }}
-          token: ${{ secrets.CODECOV_TOKEN }}
-          verbose: true
+          name: test-results-custom-AppImage-x86_64
+          path: cmake-build-appimage/tests/test_results.xml
+          if-no-files-found: error
 
-  release:
-    name: Release
-    if:
-      needs.release-setup.outputs.publish_release == 'true' &&
-      startsWith(github.repository, 'LizardByte/')
-    needs:
-      - release-setup
-      - build-archlinux
-      - build-alpine
-      - build-docker
-      - build-freebsd
-      - build-homebrew
-      - build-linux
-      - build-linux-flatpak
-      - build-macos
-      - build-windows
-    permissions:
-      contents: read
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download build artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+      - name: Upload Artifacts
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
-          path: artifacts
-          pattern: build-*
-          merge-multiple: true
+          name: build-custom-AppImage-x86_64
+          path: artifacts/
+          if-no-files-found: error
 
-      - name: Debug artifacts
-        run: ls -l artifacts
-
-      - name: Create/Update GitHub Release
-        uses: LizardByte/actions/actions/release_create@39c468549cfb87ccb917e5e5342e18abc926dc48  # v2026.909.30231
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be  # v2
         with:
-          allowUpdates: false
-          body: ${{ needs.release-setup.outputs.release_body }}
-          generateReleaseNotes: ${{ needs.release-setup.outputs.release_generate_release_notes }}
-          name: ${{ needs.release-setup.outputs.release_tag }}
-          prerelease: true
-          tag: ${{ needs.release-setup.outputs.release_tag }}
-          token: ${{ secrets.GH_BOT_TOKEN }}
-          virustotal_api_key: ${{ secrets.VIRUSTOTAL_API_KEY }}
-
-  release-homebrew-beta:
-    name: Release Homebrew Beta
-    if:
-      needs.release-setup.outputs.publish_release == 'true' &&
-      startsWith(github.repository, 'LizardByte/')
-    needs:
-      - release-setup
-      - build-homebrew
-      - release
-    permissions:
-      contents: read
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download homebrew artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: beta-Homebrew
-          path: homebrew
-
-      - name: Upload Homebrew Beta Formula
-        uses: LizardByte/actions/actions/release_homebrew@master  # action requires too many updates to pin
-        with:
-          actionlint_config: "---\n# empty config"
-          formula_file: ${{ github.workspace }}/homebrew/sunshine-beta.rb
-          git_email: ${{ secrets.GH_BOT_EMAIL }}
-          git_username: ${{ vars.GH_BOT_NAME }}
-          publish: true
-          token: ${{ secrets.GH_BOT_TOKEN }}
-          validate: false
+          subject-path: 'artifacts/*'
